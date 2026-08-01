@@ -59,7 +59,7 @@ tutors ──< study_groups ──< students ──< attendance
 ```
 
 - **tutors** — the people teaching.
-- **study_groups** — a class owned by one tutor, with a `monthly_fee`.
+- **study_groups** — a class owned by one tutor, with a `session_fee`.
 - **students** — belongs to exactly one study group.
 - **attendance** — one row per student per date, `present` true/false.
 - **payments** — money received from a student, tagged with the month it covers (`for_month`).
