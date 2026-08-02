@@ -121,13 +121,42 @@ async function bulkInsert(
 
 // ---------------------------------------------------------------- seeding
 
-type PaymentBehavior = 'paid_in_full' | 'two_instalments' | 'unpaid';
+/**
+ * How a student settles their bill.
+ *
+ * `two_instalments` and `partially_paid` are deliberately different cases:
+ * instalments split the full amount across two rows and leave the student
+ * settled, whereas a partial payer's rows sum to LESS than they owe and leave
+ * a real outstanding balance. Without partial payers, a fan-out bug in the
+ * unpaid query returns the same answer as the correct query, so nothing
+ * written against this data can catch it.
+ */
+type PaymentBehavior = 'paid_in_full' | 'two_instalments' | 'partially_paid' | 'unpaid';
 
 function paymentBehavior(): PaymentBehavior {
   const roll = rand();
-  if (roll < 0.5) return 'paid_in_full';
-  if (roll < 0.8) return 'two_instalments';
+  if (roll < 0.4) return 'paid_in_full';
+  if (roll < 0.65) return 'two_instalments';
+  if (roll < 0.85) return 'partially_paid';
   return 'unpaid';
+}
+
+/**
+ * Splits what a partial payer actually hands over for one month: strictly
+ * more than zero, strictly less than `owed`, in one or two rows.
+ * Amounts are kept to whole $5 steps so they stay readable.
+ */
+function partialPayment(owed: number): number[] {
+  const fraction = 0.3 + rand() * 0.5; // pays 30%–80% of the month
+  let total = Math.floor((owed * fraction) / 5) * 5;
+  if (total < 5) total = 5;
+  if (total >= owed) total = owed - 5;
+
+  // Below $10 there is no way to split into two positive $5 steps.
+  if (total < 10 || rand() < 0.5) return [total];
+
+  const first = Math.floor(total / 2 / 5) * 5;
+  return [first, total - first];
 }
 
 async function seed(): Promise<void> {
@@ -197,6 +226,7 @@ async function seed(): Promise<void> {
     const behaviorTally: Record<PaymentBehavior, number> = {
       paid_in_full: 0,
       two_instalments: 0,
+      partially_paid: 0,
       unpaid: 0,
     };
     const months = [...new Set(dates.map(monthOf))];
@@ -215,7 +245,7 @@ async function seed(): Promise<void> {
         if (behavior === 'paid_in_full') {
           const paidAt = `${monthPrefix}-${String(randInt(3, 15)).padStart(2, '0')}`;
           paymentRows.push([studentId, owed.toFixed(2), month, paidAt]);
-        } else {
+        } else if (behavior === 'two_instalments') {
           const first = Math.floor(owed / 2);
           const second = owed - first; // the two always sum back to owed
           paymentRows.push([
@@ -230,6 +260,17 @@ async function seed(): Promise<void> {
             month,
             `${monthPrefix}-${String(randInt(16, 27)).padStart(2, '0')}`,
           ]);
+        } else {
+          // partially_paid — these rows sum to strictly less than `owed`,
+          // leaving the student with a real outstanding balance.
+          for (const amount of partialPayment(owed)) {
+            paymentRows.push([
+              studentId,
+              amount.toFixed(2),
+              month,
+              `${monthPrefix}-${String(randInt(4, 26)).padStart(2, '0')}`,
+            ]);
+          }
         }
       }
     }
@@ -254,7 +295,8 @@ async function seed(): Promise<void> {
     console.log(
       `  payments      ${paymentRows.length} rows ` +
         `(${behaviorTally.paid_in_full} paid in full, ${behaviorTally.two_instalments} in two ` +
-        `instalments, ${behaviorTally.unpaid} unpaid)`,
+        `instalments, ${behaviorTally.partially_paid} partially paid, ` +
+        `${behaviorTally.unpaid} unpaid)`,
     );
   } catch (error) {
     await client.query('ROLLBACK');
